@@ -88,16 +88,16 @@ function shoot(sim, player, dir, weaponDef, yaw, pitch) {
       if (z.dead) continue;
       const cy = 1.0, hy = 2.02;
       const body = capsuleHit(eye.x, eye.y, eye.z, d, z.x, z.z, 1.9, 0.8, z.radius);
-      if (body && body.t < dmax && (!nearest || body.t < nearest.t)) nearest = body;
+      if (body && body.t < dmax && (!nearest || body.t < nearest.t)) {
+        nearest = { ...body, zombie: z };
+      }
       const hh = headHit(eye.x, eye.y, eye.z, d, z.x, z.z, z.x, hy, z.z, 0.30);
-      if (hh && hh.t < dmax && (!nearest || hh.t < nearest.t)) nearest = hh;
+      if (hh && hh.t < dmax && (!nearest || hh.t < nearest.t)) {
+        nearest = { ...hh, zombie: z };
+      }
     }
     sim.events.push({ t: 'shot', x: eye.x, y: eye.y, z: eye.z, dx: d.x * 40, dy: d.y * 40, dz: d.z * 40, w: player.weapon, o: player.id, to: nearest ? nearest.t : dmax });
-    if (nearest) {
-      const z = sim.zombies.find(q => q.x === nearest.x && false) ?? nearest.zombie;
-      // nearest carried zombie ref:
-    }
-    if (nearest) {
+    if (nearest && nearest.zombie) {
       const zid = nearest.zombie.id;
       const zombie = sim.zombies.find(q => q.id === zid);
       if (zombie && !zombie.dead) {
@@ -115,7 +115,6 @@ function shoot(sim, player, dir, weaponDef, yaw, pitch) {
       }
     }
   }
-  weaponDef = sim;
 }
 
 function dropLoot(sim, x, z) {
