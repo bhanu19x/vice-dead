@@ -1,0 +1,17 @@
+{
+  "name": "vice-dead",
+  "version": "1.0.0",
+  "description": "VICE DEAD - 2-player co-op zombie survival in a procedurally generated 10x10 km Vice City. Zero dependencies.",
+  "type": "module",
+  "main": "server/server.mjs",
+  "scripts": {
+    "start": "node server/server.mjs",
+    "dev": "node server/server.mjs",
+    "test": "node test/world.test.mjs && node test/sim.test.mjs && node test/server.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["game", "multiplayer", "zombies", "threejs", "webgl", "co-op"],
+  "license": "MIT"
+}
