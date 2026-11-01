@@ -1,5 +1,5 @@
 // VICE DEAD — Client WebGL renderer, audio/effects, input controller, and game loop.
-import { WORLD, districtNameAt, collidersNear } from './world.js';
+import { WORLD, districtNameAt, collidersNear, forChunksAround } from './world.js';
 import { WEAPONS, WEAPON_ORDER, createSim, spawnPlayers, stepSim, reloadNow } from './sim.js';
 
 // ---- WebGL & Canvas Setup ----
@@ -55,18 +55,46 @@ const fsSource = `
   varying vec3 vFragPos;
 
   uniform vec3 uSunDir;
+  uniform vec3 uSunColor;
   uniform vec3 uCameraPos;
   uniform float uFogDensity;
   uniform vec3 uFogColor;
+  uniform float uEmissive;
+  uniform vec3 uFlashlightPos;
+  uniform vec3 uFlashlightDir;
 
   void main() {
     vec3 norm = normalize(vNormal);
-    float diff = max(dot(norm, uSunDir), 0.15);
-    vec3 ambient = vec3(0.12, 0.10, 0.22); // Vice City night ambient
-    vec3 diffuse = vColor * diff * 0.9;
-    vec3 lit = ambient * vColor + diffuse;
 
-    // Atmospheric neon fog
+    // 1. Ambient lighting (bright enough so everything is clearly visible and readable)
+    vec3 ambient = vec3(0.35, 0.32, 0.45) * vColor;
+
+    // 2. Directional Sun lighting (Warm tropical sunlight)
+    float diff = max(dot(norm, normalize(uSunDir)), 0.0);
+    vec3 sunDiffuse = vColor * uSunColor * diff * 0.85;
+
+    // 3. Player Flashlight / Point Light
+    vec3 lightToFrag = vFragPos - uFlashlightPos;
+    float distToLight = length(lightToFrag);
+    vec3 lightDir = normalize(-lightToFrag);
+    float spotEffect = dot(lightDir, normalize(uFlashlightDir));
+    float flashlightDiff = max(dot(norm, normalize(-lightToFrag)), 0.0);
+    float attenuation = 1.0 / (1.0 + 0.02 * distToLight + 0.0008 * distToLight * distToLight);
+    vec3 flashlight = vec3(0.0);
+    if (spotEffect > 0.70) {
+      float spotIntensity = smoothstep(0.70, 0.95, spotEffect);
+      flashlight = vec3(1.0, 0.95, 0.85) * flashlightDiff * spotIntensity * attenuation * 1.5;
+    }
+    // Also a soft point light fill immediately around the player
+    float pointFill = max(0.0, 1.0 - distToLight / 18.0) * 0.45;
+    flashlight += vec3(0.9, 0.95, 1.0) * pointFill;
+
+    // 4. Emissive materials (sun, neon strips, lamps, headlights)
+    vec3 emissive = vColor * uEmissive;
+
+    vec3 lit = ambient + sunDiffuse + (vColor * flashlight) + emissive;
+
+    // Atmospheric twilight fog
     float dist = length(vFragPos - uCameraPos);
     float fog = clamp(exp(-dist * uFogDensity), 0.0, 1.0);
     vec3 finalColor = mix(uFogColor, lit, fog);
@@ -102,9 +130,13 @@ const uniforms = {
   view: gl.getUniformLocation(prog, 'uView'),
   model: gl.getUniformLocation(prog, 'uModel'),
   sunDir: gl.getUniformLocation(prog, 'uSunDir'),
+  sunColor: gl.getUniformLocation(prog, 'uSunColor'),
   camPos: gl.getUniformLocation(prog, 'uCameraPos'),
   fogDensity: gl.getUniformLocation(prog, 'uFogDensity'),
   fogColor: gl.getUniformLocation(prog, 'uFogColor'),
+  emissive: gl.getUniformLocation(prog, 'uEmissive'),
+  flashlightPos: gl.getUniformLocation(prog, 'uFlashlightPos'),
+  flashlightDir: gl.getUniformLocation(prog, 'uFlashlightDir'),
 };
 
 // Simple Matrix Math
@@ -217,8 +249,9 @@ function createCubeMesh() {
 
 const cubeMesh = createCubeMesh();
 
-function drawBox(m, color) {
+function drawBox(m, color, emissive = 0.0) {
   gl.uniformMatrix4fv(uniforms.model, false, m);
+  gl.uniform1f(uniforms.emissive, emissive);
 
   gl.bindBuffer(gl.ARRAY_BUFFER, cubeMesh.posBuf);
   gl.vertexAttribPointer(attribs.pos, 3, gl.FLOAT, false, 0, 0);
@@ -389,7 +422,8 @@ function updateHUD(sim) {
 
 // Main Render Loop
 function render(sim) {
-  gl.clearColor(0.04, 0.03, 0.08, 1.0);
+  // Vibrant twilight sky background
+  gl.clearColor(0.14, 0.10, 0.24, 1.0);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.enable(gl.DEPTH_TEST);
 
@@ -411,41 +445,168 @@ function render(sim) {
   gl.useProgram(prog);
   gl.uniformMatrix4fv(uniforms.proj, false, proj);
   gl.uniformMatrix4fv(uniforms.view, false, view);
-  gl.uniform3f(uniforms.sunDir, 0.5, 0.8, 0.3);
+
+  // Set up lighting parameters
+  // Sun: Warm, bright tropical sun positioned in the sky down the main avenue
+  const sunDir = [0.08, 0.25, 0.96];
+  gl.uniform3fv(uniforms.sunDir, sunDir);
+  gl.uniform3f(uniforms.sunColor, 1.45, 1.30, 1.05); // Warm bright sunlight
   gl.uniform3fv(uniforms.camPos, eye);
-  gl.uniform1f(uniforms.fogDensity, 0.005);
-  gl.uniform3f(uniforms.fogColor, 0.05, 0.04, 0.09);
+  gl.uniform1f(uniforms.fogDensity, 0.0018); // Crisp clear distance visibility
+  gl.uniform3f(uniforms.fogColor, 0.22, 0.16, 0.30); // Vibrant twilight haze
 
-  // 1. Draw Ground
-  let m = mat4Translate(mat4Identity(), myPlayer.x, -0.05, myPlayer.z);
-  m = mat4Scale(m, 500, 0.1, 500);
-  drawBox(m, [0.08, 0.07, 0.12]);
+  // Player Flashlight / Point Light direction
+  const lookDir = [
+    Math.sin(yaw) * Math.cos(pitch),
+    Math.sin(pitch),
+    Math.cos(yaw) * Math.cos(pitch)
+  ];
+  gl.uniform3fv(uniforms.flashlightPos, eye);
+  gl.uniform3fv(uniforms.flashlightDir, lookDir);
 
-  // 2. Draw Buildings around player
-  const colliders = collidersNear(myPlayer.x, myPlayer.z, 160);
-  for (const c of colliders) {
-    if (c.kind === 'building') {
-      let mb = mat4Translate(mat4Identity(), c.x, c.h / 2, c.z);
-      mb = mat4Scale(mb, c.hx * 2, c.h, c.hz * 2);
-      drawBox(mb, [0.22, 0.20, 0.32]);
+  // 0. Render Celestial Glowing Sun in the sky
+  let sunDist = 320;
+  const sunCenter = [myPlayer.x + sunDir[0] * sunDist, camY + sunDir[1] * sunDist, myPlayer.z + sunDir[2] * sunDist];
+  let mSun = mat4Translate(mat4Identity(), sunCenter[0], sunCenter[1], sunCenter[2]);
+  mSun = mat4Scale(mSun, 28, 28, 28);
+  drawBox(mSun, [1.0, 0.96, 0.75], 1.0); // Bright glowing sun core
+
+  let mSunCorona = mat4Translate(mat4Identity(), sunCenter[0], sunCenter[1], sunCenter[2]);
+  mSunCorona = mat4Scale(mSunCorona, 38, 38, 12);
+  drawBox(mSunCorona, [1.0, 0.85, 0.45], 0.7); // Sun glow corona
+
+  // 1. Draw Road Ground Plane
+  let mGround = mat4Translate(mat4Identity(), myPlayer.x, -0.05, myPlayer.z);
+  mGround = mat4Scale(mGround, 800, 0.1, 800);
+  drawBox(mGround, [0.24, 0.23, 0.28]); // Clean asphalt road
+
+  // 2. Iterate nearby chunks to render detailed environment: Sidewalks, Buildings, Props
+  forChunksAround(myPlayer.x, myPlayer.z, 2, (chunk) => {
+    const ox = chunk.cx * 200 - 5000;
+    const oz = chunk.cz * 200 - 5000;
+
+    // A. Sidewalk blocks along block edges
+    let mSide = mat4Translate(mat4Identity(), ox + 100, 0.15, oz + 100);
+    mSide = mat4Scale(mSide, 154, 0.3, 154);
+    drawBox(mSide, [0.65, 0.63, 0.68]); // Raised concrete sidewalk
+
+    // Road lane dividing yellow lines
+    let mLineX = mat4Translate(mat4Identity(), ox + 100, 0.02, oz + 10);
+    mLineX = mat4Scale(mLineX, 180, 0.05, 0.6);
+    drawBox(mLineX, [0.95, 0.85, 0.15], 0.4);
+
+    let mLineZ = mat4Translate(mat4Identity(), ox + 10, 0.02, oz + 100);
+    mLineZ = mat4Scale(mLineZ, 0.6, 0.05, 180);
+    drawBox(mLineZ, [0.95, 0.85, 0.15], 0.4);
+
+    // B. Buildings in chunk
+    for (const b of chunk.buildings) {
+      let mb = mat4Translate(mat4Identity(), b.x, b.h / 2, b.z);
+      mb = mat4Scale(mb, b.w, b.h, b.d);
+      const col = b.color ? [
+        ((b.color >> 16) & 255) / 255,
+        ((b.color >> 8) & 255) / 255,
+        (b.color & 255) / 255,
+      ] : [0.35, 0.32, 0.45];
+      drawBox(mb, col);
+
+      // Building neon roofline / window band
+      if (b.neon) {
+        let mn = mat4Translate(mat4Identity(), b.x, b.h + 0.3, b.z);
+        mn = mat4Scale(mn, b.w + 0.6, 0.6, b.d + 0.6);
+        const ncol = [
+          ((b.neon >> 16) & 255) / 255,
+          ((b.neon >> 8) & 255) / 255,
+          (b.neon & 255) / 255,
+        ];
+        drawBox(mn, ncol, 1.0); // Bright glowing neon roof trim
+      }
     }
-  }
+
+    // C. Environmental Props (Street lamps, palm trees, cars, dumpsters, bins, barriers)
+    if (chunk.props) {
+      for (const p of chunk.props) {
+        if (p.type === 'lamp') {
+          // Lamp pole
+          let mPole = mat4Translate(mat4Identity(), p.x, 2.8, p.z);
+          mPole = mat4Scale(mPole, 0.25, 5.6, 0.25);
+          drawBox(mPole, [0.25, 0.26, 0.30]);
+          // Glowing lamp fixture
+          let mLamp = mat4Translate(mat4Identity(), p.x, 5.7, p.z);
+          mLamp = mat4Scale(mLamp, 0.9, 0.6, 0.9);
+          drawBox(mLamp, [1.0, 0.95, 0.70], 1.0);
+        } else if (p.type === 'palm') {
+          const s = p.scale || 1.0;
+          // Palm trunk
+          let mTrunk = mat4Translate(mat4Identity(), p.x, 3.5 * s, p.z);
+          mTrunk = mat4Scale(mTrunk, 0.45 * s, 7.0 * s, 0.45 * s);
+          drawBox(mTrunk, [0.45, 0.32, 0.20]);
+          // Palm fronds / leaves canopy
+          let mLeaves = mat4Translate(mat4Identity(), p.x, 7.2 * s, p.z);
+          mLeaves = mat4Scale(mLeaves, 3.5 * s, 1.2 * s, 3.5 * s);
+          drawBox(mLeaves, [0.15, 0.55, 0.25]);
+        } else if (p.type === 'car') {
+          const cCol = p.color ? [
+            ((p.color >> 16) & 255) / 255,
+            ((p.color >> 8) & 255) / 255,
+            (p.color & 255) / 255,
+          ] : [0.7, 0.2, 0.2];
+          // Car chassis
+          let mCar = mat4Translate(mat4Identity(), p.x, 0.5, p.z);
+          mCar = mat4Scale(mCar, 2.2, 0.8, 4.4);
+          drawBox(mCar, cCol);
+          // Car cabin/windshield
+          let mRoof = mat4Translate(mat4Identity(), p.x, 1.1, p.z - 0.2);
+          mRoof = mat4Scale(mRoof, 1.8, 0.6, 2.4);
+          drawBox(mRoof, [0.2, 0.2, 0.25]);
+          // Headlights
+          let mLightL = mat4Translate(mat4Identity(), p.x - 0.7, 0.5, p.z + 2.2);
+          mLightL = mat4Scale(mLightL, 0.35, 0.25, 0.1);
+          drawBox(mLightL, [1.0, 0.98, 0.8], 1.0);
+          let mLightR = mat4Translate(mat4Identity(), p.x + 0.7, 0.5, p.z + 2.2);
+          mLightR = mat4Scale(mLightR, 0.35, 0.25, 0.1);
+          drawBox(mLightR, [1.0, 0.98, 0.8], 1.0);
+        } else if (p.type === 'bin') {
+          let mBin = mat4Translate(mat4Identity(), p.x, 0.6, p.z);
+          mBin = mat4Scale(mBin, 0.6, 1.2, 0.6);
+          drawBox(mBin, [0.18, 0.45, 0.24]);
+        } else if (p.type === 'dumpster') {
+          let mDump = mat4Translate(mat4Identity(), p.x, 0.8, p.z);
+          mDump = mat4Scale(mDump, 2.2, 1.6, 1.4);
+          drawBox(mDump, [0.25, 0.38, 0.30]);
+        } else if (p.type === 'barrier') {
+          let mBar = mat4Translate(mat4Identity(), p.x, 0.5, p.z);
+          mBar = mat4Scale(mBar, 2.4, 1.0, 0.5);
+          drawBox(mBar, [0.95, 0.45, 0.10], 0.2);
+        } else if (p.type === 'container') {
+          const col = p.color ? [
+            ((p.color >> 16) & 255) / 255,
+            ((p.color >> 8) & 255) / 255,
+            (p.color & 255) / 255,
+          ] : [0.2, 0.4, 0.8];
+          let mBox = mat4Translate(mat4Identity(), p.x, 1.5, p.z);
+          mBox = mat4Scale(mBox, 3.0, 3.0, 7.0);
+          drawBox(mBox, col);
+        }
+      }
+    }
+  });
 
   // 3. Draw Zombies
   for (const z of sim.zombies) {
     if (z.dead) continue;
     let mz = mat4Translate(mat4Identity(), z.x, 1.0, z.z);
-    const zColor = z.type === 2 ? [0.6, 0.1, 0.1] : (z.type === 1 ? [0.8, 0.4, 0.1] : [0.2, 0.5, 0.2]);
+    const zColor = z.type === 2 ? [0.65, 0.15, 0.15] : (z.type === 1 ? [0.85, 0.45, 0.15] : [0.25, 0.55, 0.25]);
     mz = mat4Scale(mz, z.radius * 2, 2.0, z.radius * 2);
     drawBox(mz, zColor);
   }
 
   // 4. Draw Pickups
   for (const k of sim.pickups) {
-    let mk = mat4Translate(mat4Identity(), k.x, 0.3 + Math.sin(sim.t * 4) * 0.1, k.z);
-    mk = mat4Scale(mk, 0.5, 0.5, 0.5);
+    let mk = mat4Translate(mat4Identity(), k.x, 0.4 + Math.sin(sim.t * 4) * 0.15, k.z);
+    mk = mat4Scale(mk, 0.6, 0.6, 0.6);
     const col = k.type === 'health' ? [1.0, 0.2, 0.3] : (k.type === 'armor' ? [0.2, 0.8, 1.0] : [1.0, 0.8, 0.2]);
-    drawBox(mk, col);
+    drawBox(mk, col, 0.8);
   }
 
   // 5. Draw Other Players
