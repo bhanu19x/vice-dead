@@ -215,6 +215,10 @@ export function allSpawnPoints() {
   for (let i = 0; i < 50; i++) { const a = i * 2.39996, d = 700 + (i % 10) * 250; const p = findOpenSpot(Math.cos(a) * d * .5, Math.sin(a) * d * .5, 0, 100); points.push(p); }
   return points;
 }
+export function worldDistance(x1, z1, x2, z2) {
+  return Math.hypot(x2 - x1, z2 - z1);
+}
+
 export function bakeDistrictTexture(size = 256) {
   const data = new Uint8Array(size * size * 4);
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
