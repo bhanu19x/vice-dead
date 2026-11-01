@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>VICE DEAD — Co-op Zombie Survival</title>
+  <style>
+    :root {
+      --neon-pink: #ff2d95;
+      --neon-cyan: #00e5ff;
+      --neon-purple: #9d4dff;
+      --neon-yellow: #ffb300;
+      --bg-dark: #0a0814;
+      --panel-bg: rgba(18, 14, 34, 0.88);
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: var(--bg-dark);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: #fff;
+    }
+    #game-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      z-index: 1;
+    }
+    /* UI Overlays */
+    .overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background: radial-gradient(circle at center, rgba(30, 20, 50, 0.85) 0%, rgba(5, 5, 12, 0.95) 100%);
+      transition: opacity 0.3s ease;
+    }
+    .overlay.hidden {
+      display: none;
+    }
+
+    /* Retro Synthwave Title */
+    .game-logo {
+      font-size: 4rem;
+      font-weight: 900;
+      letter-spacing: 6px;
+      text-transform: uppercase;
+      font-style: italic;
+      color: #fff;
+      text-shadow:
+        0 0 10px var(--neon-pink),
+        0 0 20px var(--neon-pink),
+        0 0 40px var(--neon-purple),
+        0 0 80px var(--neon-cyan);
+      margin-bottom: 0.5rem;
+      text-align: center;
+    }
+    .sub-title {
+      font-size: 1.1rem;
+      letter-spacing: 4px;
+      color: var(--neon-cyan);
+      text-transform: uppercase;
+      margin-bottom: 2rem;
+      text-shadow: 0 0 8px var(--neon-cyan);
+    }
+
+    /* Menu Card */
+    .menu-card {
+      background: var(--panel-bg);
+      border: 2px solid var(--neon-pink);
+      box-shadow: 0 0 25px rgba(255, 45, 149, 0.4), inset 0 0 15px rgba(0, 229, 255, 0.2);
+      border-radius: 8px;
+      padding: 2rem 2.5rem;
+      width: 440px;
+      max-width: 90vw;
+      display: flex;
+      flex-direction: column;
+      gap: 1.2rem;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    label {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--neon-cyan);
+    }
+    input[type="text"] {
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid var(--neon-cyan);
+      color: #fff;
+      padding: 0.75rem 1rem;
+      font-size: 1.1rem;
+      border-radius: 4px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    input[type="text"]:focus {
+      border-color: var(--neon-pink);
+      box-shadow: 0 0 10px var(--neon-pink);
+    }
+
+    .btn {
+      background: linear-gradient(135deg, #ff2d95 0%, #b827ff 100%);
+      color: #fff;
+      border: none;
+      padding: 0.85rem 1.5rem;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      border-radius: 4px;
+      cursor: pointer;
+      box-shadow: 0 0 15px rgba(255, 45, 149, 0.5);
+      transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
+    }
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 0 25px rgba(255, 45, 149, 0.8);
+      filter: brightness(1.1);
+    }
+    .btn:active {
+      transform: translateY(1px);
+    }
+    .btn.secondary {
+      background: linear-gradient(135deg, #00b4d8 0%, #0077b6 100%);
+      box-shadow: 0 0 15px rgba(0, 180, 216, 0.5);
+    }
+    .btn.secondary:hover {
+      box-shadow: 0 0 25px rgba(0, 180, 216, 0.8);
+    }
+
+    .row {
+      display: flex;
+      gap: 0.8rem;
+    }
+    .row input {
+      flex: 1;
+      text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+    }
+
+    .room-status {
+      text-align: center;
+      font-size: 0.95rem;
+      color: var(--neon-yellow);
+      min-height: 1.4rem;
+    }
+
+    /* HUD elements */
+    #hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 5;
+      display: none;
+    }
+    #hud.active {
+      display: block;
+    }
+
+    .hud-top-left {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .bar-container {
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+      width: 240px;
+      height: 22px;
+      overflow: hidden;
+      position: relative;
+    }
+    .bar-fill {
+      height: 100%;
+      transition: width 0.2s ease;
+    }
+    .bar-fill.health {
+      background: linear-gradient(90deg, #ff2d55, #ff6b8b);
+      width: 100%;
+    }
+    .bar-label {
+      position: absolute;
+      top: 2px;
+      left: 8px;
+      font-size: 0.75rem;
+      font-weight: 800;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      text-shadow: 0 0 4px #000;
+    }
+
+    .hud-top-center {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      text-align: center;
+    }
+    .wave-badge {
+      font-size: 1.8rem;
+      font-weight: 900;
+      letter-spacing: 3px;
+      color: var(--neon-yellow);
+      text-shadow: 0 0 15px var(--neon-yellow);
+    }
+    .wave-state {
+      font-size: 0.9rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #fff;
+    }
+
+    .hud-top-right {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 12px;
+    }
+    .score-box {
+      font-size: 1.4rem;
+      font-weight: 800;
+      color: var(--neon-cyan);
+      text-shadow: 0 0 10px var(--neon-cyan);
+    }
+    #minimap {
+      width: 130px;
+      height: 130px;
+      border: 2px solid var(--neon-cyan);
+      background: rgba(10, 15, 25, 0.85);
+      border-radius: 50%;
+      box-shadow: 0 0 15px rgba(0, 229, 255, 0.4);
+    }
+
+    .hud-bottom-right {
+      position: absolute;
+      bottom: 25px;
+      right: 30px;
+      text-align: right;
+    }
+    .weapon-name {
+      font-size: 1.4rem;
+      font-weight: 800;
+      color: var(--neon-pink);
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      text-shadow: 0 0 10px var(--neon-pink);
+    }
+    .ammo-count {
+      font-size: 3rem;
+      font-weight: 900;
+      line-height: 1;
+      color: #fff;
+      font-variant-numeric: tabular-nums;
+    }
+    .ammo-reserve {
+      font-size: 1.3rem;
+      color: #888;
+    }
+
+    /* Crosshair */
+    #crosshair {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 14px;
+      height: 14px;
+      pointer-events: none;
+      z-index: 6;
+      display: none;
+    }
+    #crosshair.active {
+      display: block;
+    }
+    #crosshair::before, #crosshair::after {
+      content: '';
+      position: absolute;
+      background: rgba(0, 229, 255, 0.85);
+      box-shadow: 0 0 6px var(--neon-cyan);
+    }
+    #crosshair::before {
+      top: 6px;
+      left: 0;
+      width: 14px;
+      height: 2px;
+    }
+    #crosshair::after {
+      top: 0;
+      left: 6px;
+      width: 2px;
+      height: 14px;
+    }
+
+    /* Hurt indicator & Flash */
+    #damage-flash {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      background: rgba(255, 0, 50, 0);
+      z-index: 4;
+      transition: background 0.1s;
+    }
+
+    /* Controls banner */
+    .controls-hint {
+      position: absolute;
+      bottom: 15px;
+      left: 20px;
+      font-size: 0.8rem;
+      color: rgba(255, 255, 255, 0.6);
+      line-height: 1.4;
+      pointer-events: none;
+    }
+    .controls-hint span {
+      color: var(--neon-cyan);
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game-canvas"></canvas>
+  <div id="damage-flash"></div>
+  <div id="crosshair"></div>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div class="hud-top-left">
+      <div class="bar-container">
+        <div id="health-bar" class="bar-fill health"></div>
+        <div class="bar-label">HP <span id="health-text">100</span></div>
+      </div>
+      <div id="district-banner" style="font-size:0.85rem; color:var(--neon-cyan); font-weight:bold; letter-spacing:1px;">DOWNTOWN VICE</div>
+      <div id="teammate-status" style="font-size:0.85rem; color:#aaa;">Co-op: Waiting for partner...</div>
+    </div>
+
+    <div class="hud-top-center">
+      <div id="wave-badge" class="wave-badge">WAVE 1</div>
+      <div id="wave-state" class="wave-state">PREPARE</div>
+    </div>
+
+    <div class="hud-top-right">
+      <div class="score-box">SCORE <span id="score-val">0</span></div>
+      <div style="font-size:0.9rem; color:#aaa;">KILLS <span id="kills-val">0</span></div>
+      <canvas id="minimap" width="130" height="130"></canvas>
+    </div>
+
+    <div class="hud-bottom-right">
+      <div id="weapon-name" class="weapon-name">PISTOL</div>
+      <div class="ammo-count"><span id="ammo-mag">12</span> <span class="ammo-reserve">/ <span id="ammo-res">80</span></span></div>
+    </div>
+
+    <div class="controls-hint">
+      <span>WASD</span> Move | <span>SHIFT</span> Sprint | <span>SPACE</span> Jump<br>
+      <span>CLICK</span> Shoot | <span>R</span> Reload | <span>1-4</span> Weapon
+    </div>
+  </div>
+
+  <!-- Lobby Screen -->
+  <div id="lobby-screen" class="overlay">
+    <div class="game-logo">VICE DEAD</div>
+    <div class="sub-title">CO-OP ZOMBIE SURVIVAL</div>
+
+    <div class="menu-card">
+      <div class="form-group">
+        <label for="player-name">Player Name</label>
+        <input type="text" id="player-name" maxlength="16" value="ViceSurvivor">
+      </div>
+
+      <button id="btn-solo" class="btn">Play Solo (Local)</button>
+
+      <div style="display:flex; align-items:center; gap:10px; margin: 4px 0;">
+        <div style="flex:1; height:1px; background:rgba(255,255,255,0.2);"></div>
+        <span style="font-size:0.75rem; color:#888; text-transform:uppercase;">or online co-op</span>
+        <div style="flex:1; height:1px; background:rgba(255,255,255,0.2);"></div>
+      </div>
+
+      <button id="btn-host" class="btn secondary">Host Co-op Room</button>
+
+      <div class="row">
+        <input type="text" id="room-code-input" placeholder="CODE" maxlength="4">
+        <button id="btn-join" class="btn secondary" style="flex:1.2;">Join Room</button>
+      </div>
+
+      <div id="room-status" class="room-status"></div>
+    </div>
+  </div>
+
+  <!-- Game Over Screen -->
+  <div id="gameover-screen" class="overlay hidden">
+    <div class="game-logo" style="color:var(--neon-pink); text-shadow:0 0 30px red;">SURVIVORS KILLED</div>
+    <div class="sub-title" id="gameover-stats">WAVE 1 • KILLS 0 • SCORE 0</div>
+    <button id="btn-restart" class="btn" style="width:240px;">Play Again</button>
+  </div>
+
+  <script type="module" src="/js/client.js"></script>
+  <script type="module" src="/js/net.js"></script>
+</body>
+</html>

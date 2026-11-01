@@ -135,12 +135,26 @@ function makeChunk(cx, cz) {
     for (let i = 0; i < 5; i++) addProp('bench', ox + rnd(r, 35, 165), oz + rnd(r, 35, 165), { rot: rnd(r, 0, 6.28) });
   }
 
-  // Roadside infrastructure is shared by every district.
-  const lampPts = [[24, 24], [176, 176]];
+  // Roadside infrastructure and details across street grid
+  // Corner and mid-block street lamps
+  const lampPts = [[24, 24], [100, 24], [176, 24], [24, 176], [100, 176], [176, 176], [24, 100], [176, 100]];
   for (const [lx, lz] of lampPts) addProp('lamp', ox + lx, oz + lz, { rot: r() * 6.28 });
-  if (r() < .28) addProp('car', ox + rnd(r, 18, 182), oz + 12, { rot: 0, color: pick(r, CAR_COLORS) });
-  if (r() < .18) addProp('car', ox + 12, oz + rnd(r, 18, 182), { rot: Math.PI / 2, color: pick(r, CAR_COLORS) });
-  if (r() < .2) addProp('bin', ox + rnd(r, 20, 180), oz + 20, { rot: r() * 6.28 });
+
+  // Palm trees lining avenues
+  const palmSidePts = [[32, 26], [68, 26], [132, 26], [168, 26], [32, 174], [68, 174], [132, 174], [168, 174]];
+  for (const [px, pz] of palmSidePts) {
+    if (r() < 0.85) addProp('palm', ox + px, oz + pz, { scale: rnd(r, 0.85, 1.3), rot: rnd(r, 0, 6.28) });
+  }
+
+  // Parked cars along sidewalks
+  if (r() < .75) addProp('car', ox + rnd(r, 35, 165), oz + 16, { rot: 0, color: pick(r, CAR_COLORS) });
+  if (r() < .70) addProp('car', ox + rnd(r, 35, 165), oz + 184, { rot: Math.PI, color: pick(r, CAR_COLORS) });
+  if (r() < .50) addProp('car', ox + 16, oz + rnd(r, 35, 165), { rot: Math.PI / 2, color: pick(r, CAR_COLORS) });
+
+  // Urban props: Dumpsters, bins, construction barriers
+  if (r() < .6) addProp('bin', ox + rnd(r, 20, 180), oz + 20, { rot: r() * 6.28 });
+  if (r() < .4) addProp('dumpster', ox + rnd(r, 25, 175), oz + 24, { rot: r() < .5 ? 0 : Math.PI / 2 });
+  if (r() < .35) addProp('barrier', ox + rnd(r, 30, 170), oz + 28, { rot: r() < .5 ? 0 : Math.PI / 2 });
   const chunk = { cx, cz, district, buildings, props, colliders };
   cache.set(key, chunk);
   return chunk;
@@ -215,6 +229,10 @@ export function allSpawnPoints() {
   for (let i = 0; i < 50; i++) { const a = i * 2.39996, d = 700 + (i % 10) * 250; const p = findOpenSpot(Math.cos(a) * d * .5, Math.sin(a) * d * .5, 0, 100); points.push(p); }
   return points;
 }
+export function worldDistance(x1, z1, x2, z2) {
+  return Math.hypot(x2 - x1, z2 - z1);
+}
+
 export function bakeDistrictTexture(size = 256) {
   const data = new Uint8Array(size * size * 4);
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
