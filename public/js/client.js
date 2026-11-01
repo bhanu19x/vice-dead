@@ -1,6 +1,7 @@
 // VICE DEAD — Client WebGL renderer, audio/effects, input controller, and game loop.
 import { WORLD, districtNameAt, collidersNear, forChunksAround } from './world.js';
-import { WEAPONS, WEAPON_ORDER, createSim, spawnPlayers, stepSim, reloadNow } from './sim.js';
+import { WEAPONS, WEAPON_ORDER, createSim, spawnPlayers, stepSim, reloadNow, consumeEvents } from './sim.js';
+import { playGunshot, playReload, playHit, playZombieDeath, playPickup, playPlayerHurt } from './audio.js';
 
 // ---- WebGL & Canvas Setup ----
 const canvas = document.getElementById('game-canvas');
@@ -177,6 +178,36 @@ function mat4Scale(m, sx, sy, sz) {
   return r;
 }
 
+function mat4RotateY(m, rad) {
+  const c = Math.cos(rad);
+  const s = Math.sin(rad);
+  const r = new Float32Array(m);
+  r[0] = m[0] * c - m[8] * s;
+  r[1] = m[1] * c - m[9] * s;
+  r[2] = m[2] * c - m[10] * s;
+  r[3] = m[3] * c - m[11] * s;
+  r[8] = m[0] * s + m[8] * c;
+  r[9] = m[1] * s + m[9] * c;
+  r[10] = m[2] * s + m[10] * c;
+  r[11] = m[3] * s + m[11] * c;
+  return r;
+}
+
+function mat4RotateX(m, rad) {
+  const c = Math.cos(rad);
+  const s = Math.sin(rad);
+  const r = new Float32Array(m);
+  r[4] = m[4] * c + m[8] * s;
+  r[5] = m[5] * c + m[9] * s;
+  r[6] = m[6] * c + m[10] * s;
+  r[7] = m[7] * c + m[11] * s;
+  r[8] = -m[4] * s + m[8] * c;
+  r[9] = -m[5] * s + m[9] * c;
+  r[10] = -m[6] * s + m[10] * c;
+  r[11] = -m[7] * s + m[11] * c;
+  return r;
+}
+
 function mat4LookAt(eye, center, up) {
   let zx = eye[0] - center[0], zy = eye[1] - center[1], zz = eye[2] - center[2];
   let zl = Math.hypot(zx, zy, zz) || 1;
@@ -299,7 +330,10 @@ window.addEventListener('keydown', (e) => {
   const p = currentSim.players.find(x => x.id === myPlayerId);
   if (!p) return;
 
-  if (e.code === 'KeyR') reloadNow(currentSim, p);
+  if (e.code === 'KeyR') {
+    reloadNow(currentSim, p);
+    playReload();
+  }
   if (e.code === 'Digit1') p.weapon = 'pistol';
   if (e.code === 'Digit2') p.weapon = 'smg';
   if (e.code === 'Digit3') p.weapon = 'shotgun';
@@ -592,29 +626,261 @@ function render(sim) {
     }
   });
 
-  // 3. Draw Zombies
+  // 3. Draw Zombies (Articulated 3D Humanoid Models)
   for (const z of sim.zombies) {
     if (z.dead) continue;
-    let mz = mat4Translate(mat4Identity(), z.x, 1.0, z.z);
-    const zColor = z.type === 2 ? [0.65, 0.15, 0.15] : (z.type === 1 ? [0.85, 0.45, 0.15] : [0.25, 0.55, 0.25]);
-    mz = mat4Scale(mz, z.radius * 2, 2.0, z.radius * 2);
-    drawBox(mz, zColor);
+    renderDetailedZombie(z, sim.t);
   }
 
   // 4. Draw Pickups
   for (const k of sim.pickups) {
     let mk = mat4Translate(mat4Identity(), k.x, 0.4 + Math.sin(sim.t * 4) * 0.15, k.z);
+    mk = mat4RotateY(mk, sim.t * 2);
     mk = mat4Scale(mk, 0.6, 0.6, 0.6);
     const col = k.type === 'health' ? [1.0, 0.2, 0.3] : (k.type === 'armor' ? [0.2, 0.8, 1.0] : [1.0, 0.8, 0.2]);
-    drawBox(mk, col, 0.8);
+    drawBox(mk, col, 0.9);
   }
 
-  // 5. Draw Other Players
+  // 5. Draw Other Players (Articulated Humanoid Teammate)
   for (const p of sim.players) {
     if (p.id === myPlayer.id || !p.alive) continue;
-    let mp = mat4Translate(mat4Identity(), p.x, 1.0, p.z);
-    mp = mat4Scale(mp, 0.8, 2.0, 0.8);
-    drawBox(mp, [1.0, 0.18, 0.65]); // Pink teammate
+    renderDetailedPlayer(p, sim.t);
+  }
+
+  // 6. Draw First-Person 3D Weapon Model
+  renderFirstPersonWeapon(myPlayer, sim.t);
+}
+
+// ---- Detailed 3D Model Renderers ----
+
+function renderDetailedZombie(z, time) {
+  const isHurt = (time - (z.hurtAt || -9)) < 0.15;
+  const anim = z.anim || 0;
+  const legSwing = Math.sin(anim) * 0.45;
+  const armSwing = Math.cos(anim) * 0.35;
+
+  // Base colors depending on zombie archetype
+  let skinColor, shirtColor, pantsColor;
+  let scaleW = 1.0, scaleH = 1.0;
+
+  if (z.type === 2) { // BRUTE
+    skinColor = isHurt ? [1.0, 0.4, 0.4] : [0.55, 0.25, 0.22];
+    shirtColor = [0.20, 0.22, 0.20]; // Torn dark vest
+    pantsColor = [0.15, 0.12, 0.18];
+    scaleW = 1.55;
+    scaleH = 1.35;
+  } else if (z.type === 1) { // RUNNER
+    skinColor = isHurt ? [1.0, 0.5, 0.5] : [0.65, 0.55, 0.42];
+    shirtColor = [0.85, 0.22, 0.15]; // Bloody crimson athletic shirt
+    pantsColor = [0.20, 0.30, 0.40];
+    scaleW = 0.88;
+    scaleH = 0.95;
+  } else { // WALKER
+    skinColor = isHurt ? [1.0, 0.5, 0.5] : [0.35, 0.52, 0.35]; // Rotten greenish-gray flesh
+    shirtColor = [0.45, 0.38, 0.30]; // Ragged beige shirt
+    pantsColor = [0.18, 0.22, 0.28];
+    scaleW = 1.0;
+    scaleH = 1.0;
+  }
+
+  const yaw = z.yaw || 0;
+
+  // Transform helper rooted at zombie origin (x, 0, z) with rotation
+  function partTransform(ox, oy, oz, sx, sy, sz, rx = 0, ry = 0) {
+    let m = mat4Translate(mat4Identity(), z.x, 0, z.z);
+    m = mat4RotateY(m, yaw);
+    if (z.type === 1) m = mat4RotateX(m, 0.22); // Runners hunch forward aggressively
+    m = mat4Translate(m, ox * scaleW, oy * scaleH, oz * scaleW);
+    if (rx !== 0) m = mat4RotateX(m, rx);
+    if (ry !== 0) m = mat4RotateY(m, ry);
+    m = mat4Scale(m, sx * scaleW, sy * scaleH, sz * scaleW);
+    return m;
+  }
+
+  // 1. Torso
+  const mTorso = partTransform(0, 1.15, 0, 0.52, 0.65, 0.32);
+  drawBox(mTorso, shirtColor);
+
+  // 2. Head
+  const mHead = partTransform(0, 1.68, 0.05, 0.32, 0.34, 0.32);
+  drawBox(mHead, skinColor);
+
+  // Glowing sinister zombie eyes
+  const mLeftEye = partTransform(-0.08, 1.72, 0.22, 0.06, 0.05, 0.04);
+  drawBox(mLeftEye, [1.0, 0.1, 0.1], 1.0);
+  const mRightEye = partTransform(0.08, 1.72, 0.22, 0.06, 0.05, 0.04);
+  drawBox(mRightEye, [1.0, 0.1, 0.1], 1.0);
+
+  // Gaping open jaw
+  const mJaw = partTransform(0, 1.56, 0.20, 0.18, 0.08, 0.12);
+  drawBox(mJaw, [0.15, 0.02, 0.02], 0.1);
+
+  // 3. Legs
+  // Left leg
+  const mLeftLeg = partTransform(-0.16, 0.42 + Math.abs(legSwing) * 0.08, legSwing * 0.3, 0.18, 0.80, 0.20, legSwing * 0.5);
+  drawBox(mLeftLeg, pantsColor);
+  // Right leg
+  const mRightLeg = partTransform(0.16, 0.42 + Math.abs(legSwing) * 0.08, -legSwing * 0.3, 0.18, 0.80, 0.20, -legSwing * 0.5);
+  drawBox(mRightLeg, pantsColor);
+
+  // 4. Arms (reaching forward to grab/claw)
+  // Left Arm
+  const mLeftArm = partTransform(-0.35, 1.25, 0.35 + armSwing * 0.2, 0.15, 0.15, 0.65, -0.15);
+  drawBox(mLeftArm, skinColor);
+  // Right Arm
+  const mRightArm = partTransform(0.35, 1.25, 0.35 - armSwing * 0.2, 0.15, 0.15, 0.65, -0.15);
+  drawBox(mRightArm, skinColor);
+}
+
+function renderDetailedPlayer(p, time) {
+  const isMoving = p.moving;
+  const walkCycle = isMoving ? Math.sin(time * 12) * 0.4 : 0;
+  const yaw = p.yaw || 0;
+
+  function pTransform(ox, oy, oz, sx, sy, sz, rx = 0) {
+    let m = mat4Translate(mat4Identity(), p.x, (p.y || 0), p.z);
+    m = mat4RotateY(m, yaw);
+    m = mat4Translate(m, ox, oy, oz);
+    if (rx !== 0) m = mat4RotateX(m, rx);
+    m = mat4Scale(m, sx, sy, sz);
+    return m;
+  }
+
+  // Torso (Cyan/Magenta neon jacket)
+  const mTorso = pTransform(0, 1.15, 0, 0.50, 0.65, 0.30);
+  drawBox(mTorso, [0.15, 0.85, 0.95]);
+
+  // Head (Sun-tanned skin)
+  const mHead = pTransform(0, 1.65, 0, 0.30, 0.30, 0.30);
+  drawBox(mHead, [0.88, 0.68, 0.52]);
+
+  // Aviator sunglasses
+  const mGlasses = pTransform(0, 1.68, 0.16, 0.26, 0.08, 0.05);
+  drawBox(mGlasses, [0.1, 0.1, 0.12], 0.8);
+
+  // 80s Styled Hair
+  const mHair = pTransform(0, 1.82, -0.02, 0.32, 0.10, 0.32);
+  drawBox(mHair, [0.25, 0.15, 0.10]);
+
+  // Legs (Jeans)
+  const mLeftLeg = pTransform(-0.15, 0.42, walkCycle * 0.3, 0.18, 0.80, 0.20, walkCycle * 0.6);
+  drawBox(mLeftLeg, [0.22, 0.35, 0.55]);
+  const mRightLeg = pTransform(0.15, 0.42, -walkCycle * 0.3, 0.18, 0.80, 0.20, -walkCycle * 0.6);
+  drawBox(mRightLeg, [0.22, 0.35, 0.55]);
+
+  // Gun in hands
+  const mGunArm = pTransform(0.32, 1.15, 0.32, 0.14, 0.14, 0.55, -0.2);
+  drawBox(mGunArm, [0.88, 0.68, 0.52]);
+  const mGun = pTransform(0.32, 1.15, 0.65, 0.08, 0.12, 0.35);
+  drawBox(mGun, [0.2, 0.2, 0.25]);
+}
+
+// 6. First-Person 3D Gun Model with Recoil Kick & Muzzle Flash
+let muzzleFlashTimer = 0;
+let recoilKick = 0;
+
+function renderFirstPersonWeapon(player, time) {
+  if (!player || !player.alive) return;
+  recoilKick = Math.max(0, recoilKick - 0.06);
+  muzzleFlashTimer = Math.max(0, muzzleFlashTimer - 0.05);
+
+  const weaponKey = player.weapon || 'pistol';
+  const def = WEAPONS[weaponKey] || WEAPONS.pistol;
+
+  // View bobbing when moving
+  const bobbing = player.moving ? Math.sin(time * 10) * 0.02 : 0;
+  const bobSide = player.moving ? Math.cos(time * 5) * 0.015 : 0;
+
+  // Position relative to eye: slightly down and to the right
+  const eye = [player.x, 1.62 + (player.y || 0), player.z];
+  const lookDir = [
+    Math.sin(yaw) * Math.cos(pitch),
+    Math.sin(pitch),
+    Math.cos(yaw) * Math.cos(pitch)
+  ];
+  const rightDir = [Math.cos(yaw), 0, -Math.sin(yaw)];
+  const upDir = [0, 1, 0];
+
+  // Gun anchor point in world
+  const forwardDist = 0.52 - recoilKick * 0.12;
+  const rightDist = 0.22 + bobSide;
+  const downDist = -0.20 + bobbing + recoilKick * 0.06;
+
+  const gunPos = [
+    eye[0] + lookDir[0] * forwardDist + rightDir[0] * rightDist + upDir[0] * downDist,
+    eye[1] + lookDir[1] * forwardDist + rightDir[1] * rightDist + upDir[1] * downDist,
+    eye[2] + lookDir[2] * forwardDist + rightDir[2] * rightDist + upDir[2] * downDist
+  ];
+
+  // Gun Body Transformation
+  let mGun = mat4Translate(mat4Identity(), gunPos[0], gunPos[1], gunPos[2]);
+  mGun = mat4RotateY(mGun, yaw);
+  mGun = mat4RotateX(mGun, pitch + recoilKick * 0.2);
+
+  // Metallic gun material colors
+  const darkMetal = [0.18, 0.20, 0.22];
+  const chromeAcc = [0.65, 0.68, 0.72];
+  const gripWood = [0.35, 0.20, 0.12];
+
+  if (weaponKey === 'shotgun') {
+    // Shotgun: thick heavy twin barrel + wooden pump
+    let mReceiver = mat4Translate(mGun, 0, 0, 0);
+    mReceiver = mat4Scale(mReceiver, 0.08, 0.10, 0.35);
+    drawBox(mReceiver, darkMetal);
+
+    let mBarrel = mat4Translate(mGun, 0, 0.03, 0.25);
+    mBarrel = mat4Scale(mBarrel, 0.06, 0.06, 0.40);
+    drawBox(mBarrel, chromeAcc);
+
+    let mPump = mat4Translate(mGun, 0, -0.02, 0.20);
+    mPump = mat4Scale(mPump, 0.08, 0.06, 0.18);
+    drawBox(mPump, gripWood);
+  } else if (weaponKey === 'rifle') {
+    // Rifle: long barrel + optical scope + curved magazine
+    let mReceiver = mat4Translate(mGun, 0, 0, 0);
+    mReceiver = mat4Scale(mReceiver, 0.07, 0.09, 0.45);
+    drawBox(mReceiver, darkMetal);
+
+    let mBarrel = mat4Translate(mGun, 0, 0.02, 0.32);
+    mBarrel = mat4Scale(mBarrel, 0.04, 0.04, 0.45);
+    drawBox(mBarrel, chromeAcc);
+
+    let mScope = mat4Translate(mGun, 0, 0.08, -0.05);
+    mScope = mat4Scale(mScope, 0.05, 0.05, 0.22);
+    drawBox(mScope, [0.1, 0.8, 0.9], 0.7);
+
+    let mMag = mat4Translate(mGun, 0, -0.10, 0.05);
+    mMag = mat4Scale(mMag, 0.05, 0.14, 0.09);
+    drawBox(mMag, [0.3, 0.3, 0.32]);
+  } else if (weaponKey === 'smg') {
+    // SMG: compact chassis + extended box mag
+    let mReceiver = mat4Translate(mGun, 0, 0, 0);
+    mReceiver = mat4Scale(mReceiver, 0.07, 0.08, 0.28);
+    drawBox(mReceiver, darkMetal);
+
+    let mBarrel = mat4Translate(mGun, 0, 0.01, 0.18);
+    mBarrel = mat4Scale(mBarrel, 0.04, 0.04, 0.16);
+    drawBox(mBarrel, chromeAcc);
+
+    let mMag = mat4Translate(mGun, 0, -0.12, 0.08);
+    mMag = mat4Scale(mMag, 0.04, 0.18, 0.06);
+    drawBox(mMag, [0.85, 0.15, 0.55], 0.3); // Neon-accented mag
+  } else {
+    // Pistol: sleek chrome slide + polymer grip
+    let mSlide = mat4Translate(mGun, 0, 0.02, 0);
+    mSlide = mat4Scale(mSlide, 0.06, 0.06, 0.22);
+    drawBox(mSlide, chromeAcc);
+
+    let mGrip = mat4Translate(mGun, 0, -0.08, -0.05);
+    mGrip = mat4Scale(mGrip, 0.05, 0.12, 0.07);
+    drawBox(mGrip, darkMetal);
+  }
+
+  // Muzzle Flash
+  if (muzzleFlashTimer > 0) {
+    let mFlash = mat4Translate(mGun, 0, 0.02, 0.42);
+    mFlash = mat4Scale(mFlash, 0.15, 0.15, 0.15);
+    drawBox(mFlash, [1.0, 0.9, 0.3], 2.5); // Bright emissive flash
   }
 }
 
@@ -643,6 +909,26 @@ function tick(now) {
           t: 'relay',
           data: { type: 'guest_input', input: getMyInput(dt) }
         }));
+      }
+    }
+
+    // Handle events (audio playback, effects)
+    const events = consumeEvents(currentSim);
+    for (const ev of events) {
+      if (ev.t === 'shot') {
+        if (ev.o === myPlayerId) {
+          recoilKick = 1.0;
+          muzzleFlashTimer = 1.0;
+          playGunshot(ev.w);
+        }
+      } else if (ev.t === 'blood') {
+        playHit(ev.head);
+      } else if (ev.t === 'zdeath') {
+        playZombieDeath(ev.type);
+      } else if (ev.t === 'pickup') {
+        if (ev.id === myPlayerId) playPickup(ev.type);
+      } else if (ev.t === 'reload') {
+        if (ev.id === myPlayerId) playReload();
       }
     }
 
